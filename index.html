@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D FPS Game - V10 (Shotgun Added - Tone.js Fix)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.min.js",
+        "three/examples/jsm/controls/PointerLockControls.js": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/controls/PointerLockControls.js"
+      }
+    }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; background-color: #111827; color: white; }
+        canvas { display: block; }
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 10px; height: 10px;
+            border: 2px solid white; border-radius: 50%;
+            transform: translate(-50%, -50%); pointer-events: none; z-index: 5; 
+        }
+        #instructions, #gameOverMessage, #reloadingMessage {
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+            background-color: rgba(0,0,0,0.7); padding: 10px 20px; border-radius: 8px;
+            font-size: 14px; text-align: center; z-index: 10;
+        }
+        #reloadingMessage { top: 60px; display: none; background-color: rgba(255, 165, 0, 0.8); }
+        #gameOverMessage { top: 30%; font-size: 24px; padding: 30px; display: none; }
+        #playerStats {
+            position: absolute; top: 20px; left: 20px; background-color: rgba(0,0,0,0.7);
+            padding: 10px; border-radius: 8px; font-size: 16px; z-index: 10;
+        }
+        #playerStats div { margin-bottom: 5px; }
+        #blocker {
+            position: absolute; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);
+            display: flex; justify-content: center; align-items: center; z-index: 20;
+        }
+        #blocker div { text-align: center; }
+        #blocker button {
+            background-color: #3b82f6; color: white; padding: 10px 20px; border: none;
+            border-radius: 5px; cursor: pointer; font-size: 18px; margin-top: 20px;
+        }
+        #blocker button:hover { background-color: #2563eb; }
+        #restartButton { background-color: #10b981; }
+        #restartButton:hover { background-color: #059669; }
+        .message-box {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background-color: rgba(239, 68, 68, 0.8); color: white; padding: 15px;
+            border-radius: 8px; display: none; z-index: 1000; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        #damageOverlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(255, 0, 0, 0); /* Initially transparent */
+            pointer-events: none; z-index: 15;
+            transition: background-color 0.1s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div id="damageOverlay"></div>
+    <div id="blocker">
+        <div id="blockerContent">
+            <h1 id="blockerTitle" class="text-3xl font-bold mb-4">FPS Game: Shotgun Blast!</h1>
+            <p id="blockerSubtitle" class="mb-2">Click to play!</p>
+            <p id="blockerInstructions" class="text-sm">(W,A,S,D=Move, SHIFT=Sprint, SPACE=Jump, MOUSE=Look, L_CLICK=Shoot, R_CLICK=ADS, R=Reload, 1/2/3/4=Weapon, ESC=Menu)</p>
+            <button id="startButton">Start Game</button>
+            <button id="restartButton" style="display: none;">Restart Game</button>
+        </div>
+    </div>
+
+    <div id="instructions">
+       W,A,S,D=Move | SHIFT=Sprint | SPACE=Jump | MOUSE=Look | L_CLICK=Shoot | R_CLICK=ADS | R=Reload | 1/2/3/4=Weapon | ESC=Menu
+    </div>
+    <div id="reloadingMessage">Reloading...</div>
+    <div id="gameOverMessage">Game Over!</div>
+
+    <div id="playerStats">
+        <div>Health: <span id="healthDisplay">100</span></div>
+        <div>Weapon: <span id="weaponDisplay">Pistol</span></div>
+        <div>Ammo: <span id="ammoDisplay">10/Inf</span></div>
+        <div>Score: <span id="scoreDisplay">0</span></div>
+    </div>
+    <div id="crosshair"></div>
+    <div id="messageBox" class="message-box"></div>
+
+    <script type="module">
+        import {
+            Vector3, Scene, Color, Fog, PerspectiveCamera, WebGLRenderer,
+            AmbientLight, DirectionalLight, PlaneGeometry, MeshStandardMaterial,
+            Mesh, BoxGeometry, SphereGeometry, CylinderGeometry, Group, MeshBasicMaterial,
+            Raycaster, Box3, Clock, Quaternion, MathUtils
+        } from 'three';
+        import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
+
+        // --- GAME CONFIG & VARIABLES ---
+        let scene, camera, renderer, controls;
+        let playerVelocity = new Vector3();
+        let playerOnGround = true; 
+        const playerHeight = 1.8; 
+        const playerRadius = 0.4; 
+        let basePlayerSpeed = 8.0; 
+        const sprintMultiplier = 1.6;
+        const adsSpeedMultiplier = 0.6; 
+        const playerJumpForce = 9.0;
+        const gravity = -30.0;
+        let groundMesh; 
+        
+        let playerHealth = 100;
+        const maxPlayerHealth = 100;
+        let playerDamageCooldown = 0; 
+        const playerDamageCooldownTime = 0.5; 
+        let playerScore = 0;
+
+        let isGameOver = false;
+        let isADS = false; 
+        const defaultFOV = 75;
+        let isFiring = false; 
+        let isReloading = false;
+
+
+        const moveState = {
+            forward: false, backward: false, left: false, right: false,
+            jump: false, sprint: false
+        };
+
+        let staticCollidableObjects = []; 
+        let bullets = []; 
+        let enemyBullets = []; 
+        let enemies = []; 
+        const targetEnemyCount = 8; 
+        const enemySpawnMinDistance = 25; 
+        const enemySpawnMaxDistance = 70; 
+
+
+        // Weapon System
+        const weapons = [
+            { 
+                name: "Pistol", bulletSpeed: 80, adsFOV: 60, shootSoundPitch: "C5",
+                fireRateDelay: 250, auto: false, magSize: 10, reloadTime: 1500, 
+                pellets: 1, spreadAngle: 0, damagePerPellet: 1 
+            },
+            { 
+                name: "Rifle",  bulletSpeed: 150, adsFOV: 40, shootSoundPitch: "A4",
+                fireRateDelay: 400, auto: false, magSize: 20, reloadTime: 2500,
+                pellets: 1, spreadAngle: 0, damagePerPellet: 2 
+            },
+            {
+                name: "Assault Rifle", bulletSpeed: 120, adsFOV: 50, shootSoundPitch: "G4",
+                fireRateDelay: 100, auto: true, magSize: 30, reloadTime: 3000,
+                pellets: 1, spreadAngle: 0, damagePerPellet: 1
+            },
+            {
+                name: "Shotgun", bulletSpeed: 70, adsFOV: 65, shootSoundPitch: "E3", 
+                fireRateDelay: 800, auto: false, magSize: 6, reloadTime: 3500,
+                pellets: 8, spreadAngle: 0.15, damagePerPellet: 1 
+            }
+        ];
+        weapons.forEach(w => { 
+            w.ammoInMag = w.magSize;
+            w.totalAmmo = Infinity; 
+        });
+        let currentWeaponIndex = 0;
+        let lastShotTime = 0;
+
+        // Sound Effects
+        let shootSound, jumpSound, enemyHitSound, enemyDestroySound, playerHitSound, switchWeaponSound, reloadSound, noAmmoSound, enemyShootSound;
+        let soundsReady = false;
+        const clock = new Clock(); 
+        const toneOffset = 0.005; // Small offset for Tone.js scheduling
+
+        // --- INITIALIZATION & RESET ---
+        function init() {
+            scene = new Scene();
+            scene.background = new Color(0x87ceeb);
+            scene.fog = new Fog(0x87ceeb, 0, 150);
+            camera = new PerspectiveCamera(defaultFOV, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            const ambientLight = new AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const directionalLight = new DirectionalLight(0xffffff, 0.9);
+            directionalLight.position.set(50, 80, 30);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            scene.add(directionalLight);
+
+            const groundGeometry = new PlaneGeometry(200, 200, 50, 50);
+            const groundMaterial = new MeshStandardMaterial({ color: 0x228B22 });
+            groundMesh = new Mesh(groundGeometry, groundMaterial);
+            groundMesh.rotation.x = -Math.PI / 2;
+            groundMesh.receiveShadow = true;
+            groundMesh.name = "ground";
+            scene.add(groundMesh);
+            
+            controls = new PointerLockControls(camera, renderer.domElement);
+            scene.add(controls.getObject()); 
+
+            setupPointerLock();
+            setupEventListeners();
+            setupSounds(); 
+            resetGame(); 
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function resetGame() {
+            isGameOver = false; isADS = false; isFiring = false; isReloading = false;
+            camera.fov = defaultFOV; camera.updateProjectionMatrix();
+            document.getElementById('crosshair').style.display = 'block';
+            document.getElementById('reloadingMessage').style.display = 'none';
+            document.getElementById('gameOverMessage').style.display = 'none';
+            document.getElementById('restartButton').style.display = 'none';
+            document.getElementById('startButton').style.display = 'inline-block'; 
+            document.getElementById('blockerTitle').textContent = "FPS Game: Shotgun Blast!";
+            document.getElementById('blockerSubtitle').style.display = 'block';
+            document.getElementById('blockerInstructions').style.display = 'block';
+
+            bullets.forEach(b => scene.remove(b)); bullets = [];
+            enemyBullets.forEach(b => scene.remove(b)); enemyBullets = [];
+            enemies.forEach(eGroup => scene.remove(eGroup)); enemies = [];
+            staticCollidableObjects.forEach(o => scene.remove(o)); staticCollidableObjects = [];
+
+            playerHealth = maxPlayerHealth; playerScore = 0; playerDamageCooldown = 0;
+            currentWeaponIndex = 0; 
+            weapons.forEach(w => { w.ammoInMag = w.magSize; }); 
+            updatePlayerStats();
+            controls.getObject().position.set(0, playerHeight, 10); 
+            playerVelocity.set(0,0,0); playerOnGround = true;
+
+            const boxGeometry = new BoxGeometry(5, 5, 5);
+            for (let i = 0; i < 15; i++) { 
+                const boxMaterial = new MeshStandardMaterial({ color: Math.random() * 0xffffff });
+                const box = new Mesh(boxGeometry, boxMaterial);
+                box.position.set((Math.random() - 0.5) * 150, 2.5, (Math.random() - 0.5) * 150);
+                box.castShadow = true; box.receiveShadow = true; box.name = "destructible_box"; 
+                scene.add(box); staticCollidableObjects.push(box);
+            }
+            for (let i = 0; i < targetEnemyCount; i++) spawnEnemy();
+            if (controls.isLocked) document.getElementById('blocker').style.display = 'none';
+            else document.getElementById('blocker').style.display = 'flex';
+        }
+        
+        function spawnEnemy() {
+            const enemyBodyMaterial = new MeshStandardMaterial({ color: 0xcc0000 }); 
+            const enemyHeadMaterial = new MeshStandardMaterial({ color: 0x990000 }); 
+            const enemyBodyHeight = playerHeight * 0.8, enemyBodyRadius = 0.5, enemyHeadRadius = 0.3;
+            const enemyBodyGeometry = new CylinderGeometry(enemyBodyRadius, enemyBodyRadius, enemyBodyHeight, 16);
+            const enemyHeadGeometry = new SphereGeometry(enemyHeadRadius, 16, 16);
+            const enemyGroup = new Group(); 
+            const body = new Mesh(enemyBodyGeometry, enemyBodyMaterial);
+            body.castShadow = true; body.receiveShadow = true; enemyGroup.add(body);
+            const head = new Mesh(enemyHeadGeometry, enemyHeadMaterial);
+            head.position.y = enemyBodyHeight / 2 + enemyHeadRadius * 0.8; 
+            head.castShadow = true; head.receiveShadow = true; enemyGroup.add(head);
+            
+            let validPosition = false, attempts = 0;
+            const playerPos = controls.getObject().position;
+            while(!validPosition && attempts < 50) { 
+                const angle = Math.random() * Math.PI * 2;
+                const distance = MathUtils.randFloat(enemySpawnMinDistance, enemySpawnMaxDistance);
+                enemyGroup.position.set( playerPos.x + Math.cos(angle) * distance, enemyBodyHeight / 2, playerPos.z + Math.sin(angle) * distance);
+                validPosition = true; attempts++;
+            }
+            if (!validPosition) enemyGroup.position.set( (Math.random() - 0.5) * 100, enemyBodyHeight / 2, (Math.random() - 0.5) * 100);
+            enemyGroup.name = "enemy_group"; 
+            enemyGroup.userData = { 
+                health: 3, type: "enemy", speed: MathUtils.randFloat(2.5, 4.0), 
+                detectionRange: 35, attackRange: 2.0, shootRange: 25, shootCooldown: 0, shootCooldownTime: MathUtils.randFloat(2.0, 4.0), 
+                canShoot: true, state: 'idle'
+            }; 
+            scene.add(enemyGroup); enemies.push(enemyGroup); 
+        }
+
+        // --- SOUNDS ---
+        async function setupSounds() {
+            try {
+                await Tone.start(); console.log("AudioContext started");
+                shootSound = new Tone.Synth({ oscillator: { type: "triangle" }, envelope: { attack: 0.005, decay: 0.1, sustain: 0.01, release: 0.1 } }).toDestination();
+                shootSound.volume.value = -12;
+                jumpSound = new Tone.Synth({ oscillator: { type: "sine" }, envelope: { attack: 0.01, decay: 0.2, sustain: 0.05, release: 0.2 } }).toDestination();
+                jumpSound.volume.value = -10;
+                enemyHitSound = new Tone.Synth({ oscillator: { type: "square" }, envelope: { attack: 0.005, decay: 0.05, sustain: 0, release: 0.1 } }).toDestination();
+                enemyHitSound.volume.value = -8;
+                enemyDestroySound = new Tone.NoiseSynth({ noise: { type: "white" }, envelope: { attack: 0.005, decay: 0.2, sustain: 0, release: 0.2 } }).toDestination();
+                enemyDestroySound.volume.value = -5;
+                playerHitSound = new Tone.Synth({ oscillator: { type: "sawtooth" }, envelope: { attack: 0.01, decay: 0.15, sustain: 0, release: 0.2 } }).toDestination();
+                playerHitSound.volume.value = -6;
+                switchWeaponSound = new Tone.Synth({ oscillator: { type: "sine" }, envelope: { attack: 0.01, decay: 0.1, sustain: 0, release: 0.1 } }).toDestination();
+                switchWeaponSound.volume.value = -15;
+                reloadSound = new Tone.NoiseSynth({ noise: { type: "pink" }, envelope: { attack: 0.01, decay: 0.3, sustain: 0.05, release: 0.1 } }).toDestination();
+                reloadSound.volume.value = -10;
+                noAmmoSound = new Tone.Synth({ oscillator: {type: "square"}, envelope: {attack: 0.005, decay: 0.05, sustain:0, release: 0.05}}).toDestination();
+                noAmmoSound.volume.value = -15;
+                enemyShootSound = new Tone.Synth({ oscillator: { type: "sawtooth" }, envelope: { attack: 0.005, decay: 0.1, sustain: 0.01, release: 0.1 } }).toDestination();
+                enemyShootSound.volume.value = -18; 
+                soundsReady = true;
+            } catch (e) { console.error("Error starting Tone.js:", e); showMessageBox("Could not initialize audio.", 5000); }
+        }
+
+        // --- POINTER LOCK & EVENT LISTENERS ---
+        function setupPointerLock() {
+            const blocker = document.getElementById('blocker'), startButton = document.getElementById('startButton'), restartButton = document.getElementById('restartButton');
+            startButton.addEventListener('click', async () => {
+                if (!soundsReady) await setupSounds(); if (isGameOver) return; 
+                controls.lock(); blocker.style.display = 'none'; 
+            });
+            restartButton.addEventListener('click', () => { resetGame(); controls.lock(); });
+            controls.addEventListener('lock', () => { if (!isGameOver) blocker.style.display = 'none'; });
+            controls.addEventListener('unlock', () => { 
+                blocker.style.display = 'flex'; 
+                if (isGameOver) {
+                     document.getElementById('gameOverMessage').style.display = 'block';
+                     document.getElementById('restartButton').style.display = 'inline-block';
+                     document.getElementById('startButton').style.display = 'none';
+                     document.getElementById('blockerTitle').textContent = "Game Over!";
+                     document.getElementById('blockerSubtitle').style.display = 'none';
+                     document.getElementById('blockerInstructions').style.display = 'none';
+                }
+            });
+        }
+
+        function setupEventListeners() {
+            document.addEventListener('keydown', onKeyDown); document.addEventListener('keyup', onKeyUp);
+            document.addEventListener('mousedown', onMouseDown); document.addEventListener('mouseup', onMouseUp); 
+        }
+
+        function onKeyDown(event) {
+            if (isGameOver) return;
+            if (!controls.isLocked && event.key !== 'Escape') return;
+            switch (event.key.toLowerCase()) {
+                case 'w': moveState.forward = true; break; case 's': moveState.backward = true; break;
+                case 'a': moveState.left = true; break; case 'd': moveState.right = true; break;
+                case ' ': moveState.jump = true; break; case 'shift': moveState.sprint = true; break;
+                case 'escape': if (controls.isLocked) controls.unlock(); break;
+                case '1': switchWeapon(0); break; case '2': switchWeapon(1); break; case '3': switchWeapon(2); break; 
+                case '4': switchWeapon(3); break; 
+                case 'r': if (!isReloading) reloadWeapon(); break;
+            }
+        }
+        function onKeyUp(event) {
+            if (isGameOver) return;
+            switch (event.key.toLowerCase()) {
+                case 'w': moveState.forward = false; break; case 's': moveState.backward = false; break;
+                case 'a': moveState.left = false; break; case 'd': moveState.right = false; break;
+                case ' ': moveState.jump = false; break; case 'shift': moveState.sprint = false; break;
+            }
+        }
+        
+        function onMouseDown(event) {
+            if (isGameOver || !controls.isLocked || isReloading) return;
+            const currentWeapon = weapons[currentWeaponIndex];
+            switch (event.button) {
+                case 0: isFiring = true; if (!currentWeapon.auto) tryShoot(); break;
+                case 2: toggleADS(); break;
+            }
+        }
+        function onMouseUp(event) { if (event.button === 0) isFiring = false; }
+
+        function tryShoot() { 
+            const weapon = weapons[currentWeaponIndex];
+            if (isReloading) return;
+            if (weapon.ammoInMag <= 0) {
+                if (soundsReady && noAmmoSound) noAmmoSound.triggerAttackRelease("C2", "16n", Tone.now() + toneOffset);
+                if (weapon.totalAmmo > 0) reloadWeapon(); 
+                return;
+            }
+            const now = performance.now();
+            if (now - lastShotTime > weapon.fireRateDelay) {
+                weapon.ammoInMag--;
+                updatePlayerStats();
+                
+                const playerDirection = new Vector3();
+                camera.getWorldDirection(playerDirection); 
+
+                for (let i = 0; i < weapon.pellets; i++) {
+                    const bulletGeometry = new SphereGeometry(0.1, 8, 8);
+                    const bulletMaterial = new MeshBasicMaterial({ color: 0xffff00 }); 
+                    const bullet = new Mesh(bulletGeometry, bulletMaterial);
+                    
+                    let shootDirection = playerDirection.clone();
+                    if (weapon.pellets > 1) { 
+                        const spread = new Vector3(
+                            (Math.random() - 0.5) * weapon.spreadAngle,
+                            (Math.random() - 0.5) * weapon.spreadAngle,
+                            (Math.random() - 0.5) * weapon.spreadAngle 
+                        );
+                        shootDirection.add(spread).normalize();
+                    }
+                    
+                    bullet.position.copy(controls.getObject().position).addScaledVector(shootDirection, 1.5); 
+                    bullet.velocity = shootDirection.multiplyScalar(weapon.bulletSpeed); 
+                    scene.add(bullet); bullets.push(bullet);
+                }
+
+                if (soundsReady && shootSound) shootSound.triggerAttackRelease(weapon.shootSoundPitch, "8n", Tone.now() + toneOffset);
+                lastShotTime = now;
+            }
+        }
+        function reloadWeapon() {
+            const weapon = weapons[currentWeaponIndex];
+            if (isReloading || weapon.ammoInMag === weapon.magSize || weapon.totalAmmo <= 0) return; 
+            
+            isReloading = true; isFiring = false; 
+            document.getElementById('reloadingMessage').style.display = 'block';
+            if (soundsReady && reloadSound) reloadSound.triggerAttackRelease("4n", Tone.now() + toneOffset);
+
+            setTimeout(() => {
+                const ammoNeeded = weapon.magSize - weapon.ammoInMag;
+                const ammoToTransfer = Math.min(ammoNeeded, weapon.totalAmmo); 
+                weapon.ammoInMag += ammoToTransfer;
+                if (weapon.totalAmmo !== Infinity) weapon.totalAmmo -= ammoToTransfer;
+                isReloading = false;
+                document.getElementById('reloadingMessage').style.display = 'none';
+                updatePlayerStats();
+            }, weapon.reloadTime);
+        }
+
+        function switchWeapon(newIndex) {
+            if (isReloading) return; 
+            if (newIndex >= 0 && newIndex < weapons.length && newIndex !== currentWeaponIndex) {
+                currentWeaponIndex = newIndex; isFiring = false; 
+                if (soundsReady && switchWeaponSound) switchWeaponSound.triggerAttackRelease("E5", "16n", Tone.now() + toneOffset);
+                updatePlayerStats();
+                if (isADS) { camera.fov = weapons[currentWeaponIndex].adsFOV; camera.updateProjectionMatrix(); }
+            }
+        }
+        function toggleADS() {
+            if (isReloading) return; 
+            isADS = !isADS;
+            if (isADS) { camera.fov = weapons[currentWeaponIndex].adsFOV; document.getElementById('crosshair').style.display = 'none';}
+            else { camera.fov = defaultFOV; document.getElementById('crosshair').style.display = 'block';}
+            camera.updateProjectionMatrix();
+        }
+        
+        // --- ENEMY AI UPDATE ---
+        function updateEnemies(delta) {
+            const playerPosition = controls.getObject().position;
+            enemies.forEach(enemyGroup => { 
+                const enemyData = enemyGroup.userData;
+                const enemyPosition = enemyGroup.position;
+                const distToPlayer = enemyPosition.distanceTo(playerPosition);
+
+                if (enemyData.shootCooldown > 0) enemyData.shootCooldown -= delta;
+                else enemyData.canShoot = true;
+
+                if (distToPlayer < enemyData.detectionRange) {
+                    enemyData.state = 'chasing';
+                    const lookAtPosition = new Vector3(playerPosition.x, enemyPosition.y, playerPosition.z);
+                    enemyGroup.lookAt(lookAtPosition); 
+                    const moveDirection = new Vector3().subVectors(playerPosition, enemyPosition).normalize();
+                    let intendedMoveDistance = enemyData.speed * delta;
+                    
+                    const enemyBoundingBox = new Box3().setFromObject(enemyGroup); 
+                    const enemySize = new Vector3(); enemyBoundingBox.getSize(enemySize);
+                    const enemyCollisionRadius = Math.max(enemySize.x, enemySize.z) / 2; 
+                    const enemyRaycaster = new Raycaster(enemyPosition, moveDirection, 0, enemyCollisionRadius + intendedMoveDistance);
+                    const obstacleIntersects = enemyRaycaster.intersectObjects(staticCollidableObjects, false);
+                    if (obstacleIntersects.length > 0 && obstacleIntersects[0].distance < enemyCollisionRadius + intendedMoveDistance) {
+                       intendedMoveDistance = Math.max(0, obstacleIntersects[0].distance - enemyCollisionRadius - 0.01);
+                    }
+                    enemies.forEach(otherEnemyGroup => {
+                        if (enemyGroup === otherEnemyGroup) return;
+                        const otherEnemyBox = new Box3().setFromObject(otherEnemyGroup);
+                        const otherEnemySize = new Vector3(); otherEnemyBox.getSize(otherEnemySize);
+                        if (enemyPosition.distanceTo(otherEnemyGroup.position) < (enemyCollisionRadius + Math.max(otherEnemySize.x, otherEnemySize.z) / 2) ) { 
+                            const avoidance = new Vector3().subVectors(enemyPosition, otherEnemyGroup.position).normalize().multiplyScalar(0.1); 
+                            moveDirection.add(avoidance).normalize(); 
+                        }
+                    });
+                    enemyGroup.position.addScaledVector(moveDirection, intendedMoveDistance); 
+
+                    if (distToPlayer < enemyData.attackRange && playerDamageCooldown <= 0) { 
+                        playerHealth -= 10; playerDamageCooldown = playerDamageCooldownTime;
+                        updatePlayerStats(); showDamageEffect();
+                        if (soundsReady && playerHitSound) playerHitSound.triggerAttackRelease("C3", "8n", Tone.now() + toneOffset);
+                        if (playerHealth <= 0) gameOver();
+                    } else if (distToPlayer < enemyData.shootRange && enemyData.canShoot) { 
+                        const losRaycaster = new Raycaster(enemyPosition, moveDirection, 0, distToPlayer);
+                        const losIntersects = losRaycaster.intersectObjects([groundMesh, ...staticCollidableObjects, controls.getObject()], false); 
+                        let playerVisible = false;
+                        if (losIntersects.length > 0) {
+                            if (losIntersects[0].object === controls.getObject() || losIntersects[0].object.parent === controls.getObject()) {
+                                playerVisible = true;
+                            } else if (losIntersects[0].object.geometry && losIntersects[0].object.geometry.type === "SphereGeometry" && losIntersects[0].distance < distToPlayer * 0.9){} 
+                            else { playerVisible = false; }
+                        }
+                        if (playerVisible) {
+                            enemyData.canShoot = false; enemyData.shootCooldown = enemyData.shootCooldownTime;
+                            if (soundsReady && enemyShootSound) enemyShootSound.triggerAttackRelease("F3", "16n", Tone.now() + toneOffset);
+                            const bulletGeo = new SphereGeometry(0.15, 8, 8); 
+                            const bulletMat = new MeshBasicMaterial({ color: 0xff6666 }); 
+                            const eBullet = new Mesh(bulletGeo, bulletMat);
+                            const shootDirection = new Vector3().subVectors(playerPosition, enemyPosition).normalize();
+                            const headOffset = new Vector3(0, playerHeight * 0.8 / 2 + 0.3, 0); 
+                            eBullet.position.copy(enemyPosition).add(headOffset).addScaledVector(shootDirection, 1.0); 
+                            eBullet.velocity = shootDirection.multiplyScalar(50); 
+                            scene.add(eBullet); enemyBullets.push(eBullet);
+                        }
+                    }
+                } else { enemyData.state = 'idle'; }
+            });
+        }
+        
+        function showDamageEffect() {
+            const overlay = document.getElementById('damageOverlay');
+            overlay.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+            setTimeout(() => { overlay.style.backgroundColor = 'rgba(255, 0, 0, 0)'; }, 100); 
+        }
+
+        function gameOver() {
+            isGameOver = true; isFiring = false; 
+            controls.unlock(); 
+            document.getElementById('gameOverMessage').style.display = 'block';
+            document.getElementById('restartButton').style.display = 'inline-block';
+            document.getElementById('startButton').style.display = 'none'; 
+            document.getElementById('blockerTitle').textContent = "Game Over!";
+            document.getElementById('blockerSubtitle').textContent = `Final Score: ${playerScore}`; 
+            document.getElementById('blockerSubtitle').style.display = 'block';
+            document.getElementById('blockerInstructions').style.display = 'none';
+            console.log("GAME OVER - Final Score:", playerScore);
+        }
+
+        // --- MAIN UPDATE LOGIC ---
+        function update() {
+            const delta = clock.getDelta();
+            if (isGameOver) { 
+                [...bullets, ...enemyBullets].forEach((bullet) => { 
+                    bullet.position.addScaledVector(bullet.velocity, delta);
+                    if (bullet.position.lengthSq() > 400*400) scene.remove(bullet); 
+                });
+                bullets = bullets.filter(b => b.parent);
+                enemyBullets = enemyBullets.filter(b => b.parent);
+                return;
+            }
+            if (playerDamageCooldown > 0) playerDamageCooldown -= delta;
+            if (isFiring && controls.isLocked && weapons[currentWeaponIndex].auto && !isReloading) tryShoot();
+            if (!controls.isLocked) { 
+                 [...bullets, ...enemyBullets].forEach((bullet) => {
+                    bullet.position.addScaledVector(bullet.velocity, delta);
+                     if (bullet.position.lengthSq() > 400*400) scene.remove(bullet);
+                });
+                bullets = bullets.filter(b => b.parent);
+                enemyBullets = enemyBullets.filter(b => b.parent);
+                return;
+            }
+            
+            updateEnemies(delta); 
+
+            let currentMovementSpeed = basePlayerSpeed;
+            if (isADS && !isReloading) currentMovementSpeed *= adsSpeedMultiplier;
+            if (moveState.sprint && !isADS && !isReloading) currentMovementSpeed *= sprintMultiplier; 
+
+            const playerPosition = controls.getObject().position;
+            const playerQuaternion = controls.getObject().quaternion;
+
+            if (playerOnGround) {
+                playerVelocity.y = 0; 
+                if (moveState.jump && !isReloading) {
+                    playerVelocity.y = playerJumpForce; playerOnGround = false; 
+                    if (soundsReady && jumpSound) jumpSound.triggerAttackRelease("G4", "8n", Tone.now() + toneOffset);
+                }
+            } else { playerVelocity.y += gravity * delta; }
+
+            let intendedForwardDelta = 0;
+            if (moveState.forward) intendedForwardDelta += currentMovementSpeed * delta;
+            if (moveState.backward) intendedForwardDelta -= currentMovementSpeed * 0.8 * delta;
+            let intendedRightDelta = 0;
+            if (moveState.left) intendedRightDelta -= currentMovementSpeed * 0.9 * delta;
+            if (moveState.right) intendedRightDelta += currentMovementSpeed * 0.9 * delta;
+
+            const obstaclesForPlayerHorizontalCheck = [...staticCollidableObjects, ...enemies];
+            if (Math.abs(intendedForwardDelta) > 1e-5) {
+                const forwardDir = new Vector3(0, 0, -1).applyQuaternion(playerQuaternion).normalize();
+                const forwardRaycaster = new Raycaster(playerPosition, forwardDir, 0, playerRadius + Math.abs(intendedForwardDelta));
+                const forwardIntersects = forwardRaycaster.intersectObjects(obstaclesForPlayerHorizontalCheck, false);
+                if (forwardIntersects.length > 0 && forwardIntersects[0].distance < playerRadius + Math.abs(intendedForwardDelta)) {
+                    intendedForwardDelta = Math.sign(intendedForwardDelta) * Math.max(0, forwardIntersects[0].distance - playerRadius - 0.01);
+                }
+            }
+            const tempPosAfterForward = playerPosition.clone();
+            const forwardDisplacementVec = new Vector3(0, 0, -1).applyQuaternion(playerQuaternion).multiplyScalar(intendedForwardDelta);
+            tempPosAfterForward.add(forwardDisplacementVec);
+            if (Math.abs(intendedRightDelta) > 1e-5) {
+                const rightDir = new Vector3(1, 0, 0).applyQuaternion(playerQuaternion).normalize();
+                const rightRaycaster = new Raycaster(tempPosAfterForward, rightDir, 0, playerRadius + Math.abs(intendedRightDelta));
+                const rightIntersects = rightRaycaster.intersectObjects(obstaclesForPlayerHorizontalCheck, false);
+                if (rightIntersects.length > 0 && rightIntersects[0].distance < playerRadius + Math.abs(intendedRightDelta)) {
+                    intendedRightDelta = Math.sign(intendedRightDelta) * Math.max(0, rightIntersects[0].distance - playerRadius - 0.01);
+                }
+            }
+            
+            controls.moveForward(intendedForwardDelta); controls.moveRight(intendedRightDelta);
+            playerPosition.y += playerVelocity.y * delta; 
+
+            const downRayOrigin = playerPosition.clone(); 
+            const downRaycaster = new Raycaster(downRayOrigin, new Vector3(0, -1, 0), 0, playerHeight + 0.2); 
+            const allCollidersForGroundCheck = [groundMesh, ...staticCollidableObjects, ...enemies];
+            const groundIntersects = downRaycaster.intersectObjects(allCollidersForGroundCheck, false);
+            let landedThisFrame = false; 
+            if (groundIntersects.length > 0) {
+                const distToGround = groundIntersects[0].distance; 
+                if (distToGround < playerHeight + 0.01 && playerVelocity.y <= 0) { 
+                    playerPosition.y = (playerPosition.y - distToGround) + playerHeight - 0.01; 
+                    playerVelocity.y = 0; landedThisFrame = true;
+                }
+            }
+            playerOnGround = landedThisFrame;
+            if (playerPosition.y < playerHeight * 0.1) { 
+                 playerPosition.y = playerHeight * 0.1; playerVelocity.y = 0; playerOnGround = true; 
+            }
+
+            // Player Bullet Update & Collision
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                bullet.position.addScaledVector(bullet.velocity, delta);
+                let bulletRemoved = false;
+                for (let j = staticCollidableObjects.length - 1; j >= 0; j--) {
+                    const box = staticCollidableObjects[j];
+                    if (box.name === "destructible_box") { 
+                        const boxCollider = new Box3().setFromObject(box);
+                        if (boxCollider.containsPoint(bullet.position)) {
+                            scene.remove(box); staticCollidableObjects.splice(j, 1); 
+                            scene.remove(bullet); bullets.splice(i, 1);
+                            bulletRemoved = true; break; 
+                        }
+                    }
+                }
+                if (bulletRemoved) continue;
+                for (let k = enemies.length - 1; k >= 0; k--) {
+                    const enemyGroup = enemies[k]; 
+                    const enemyCollider = new Box3().setFromObject(enemyGroup); 
+                    if (enemyCollider.containsPoint(bullet.position)) {
+                        enemyGroup.userData.health -= weapons[currentWeaponIndex].damagePerPellet; 
+                        if (soundsReady && enemyHitSound) enemyHitSound.triggerAttackRelease("A5", "16n", Tone.now() + toneOffset);
+                        if (enemyGroup.userData.health <= 0) {
+                            scene.remove(enemyGroup); enemies.splice(k, 1); 
+                            playerScore += 100; updatePlayerStats(); 
+                            if (soundsReady && enemyDestroySound) enemyDestroySound.triggerAttackRelease("8n", Tone.now() + toneOffset);
+                            if (enemies.length < targetEnemyCount) spawnEnemy();
+                        }
+                        scene.remove(bullet); bullets.splice(i, 1);
+                        bulletRemoved = true; break; 
+                    }
+                }
+                if (bulletRemoved) continue;
+                if (bullet.position.lengthSq() > 400*400) { scene.remove(bullet); bullets.splice(i, 1); }
+            }
+
+            // Enemy Bullet Update & Collision
+            for (let i = enemyBullets.length - 1; i >= 0; i--) {
+                const eBullet = enemyBullets[i];
+                eBullet.position.addScaledVector(eBullet.velocity, delta);
+                const playerHeadPos = playerPosition.clone(); 
+                const playerFeetPos = playerPosition.clone().setY(playerPosition.y - playerHeight / 2);
+                const playerCapsulePoints = [playerFeetPos, playerHeadPos]; 
+                let hitPlayer = false;
+                for(const p of playerCapsulePoints){
+                    if(eBullet.position.distanceTo(p) < playerRadius + 0.15){ 
+                        hitPlayer = true; break;
+                    }
+                }
+                const playerAABB = new Box3().setFromCenterAndSize(
+                    playerPosition.clone().setY(playerPosition.y - playerHeight/2 + playerHeight/2), 
+                    new Vector3(playerRadius * 2, playerHeight, playerRadius * 2)
+                );
+
+                if (hitPlayer || playerAABB.containsPoint(eBullet.position)) {
+                    if (playerDamageCooldown <=0) { 
+                        playerHealth -= 5; 
+                        playerDamageCooldown = playerDamageCooldownTime;
+                        updatePlayerStats(); showDamageEffect();
+                        if (soundsReady && playerHitSound) playerHitSound.triggerAttackRelease("B2", "16n", Tone.now() + toneOffset); 
+                        if (playerHealth <= 0) gameOver();
+                    }
+                    scene.remove(eBullet); enemyBullets.splice(i, 1);
+                    continue;
+                }
+                if (eBullet.position.lengthSq() > 300*300) { scene.remove(eBullet); enemyBullets.splice(i, 1); }
+            }
+        }
+
+        // --- RENDER LOOP & UTILITIES ---
+        function animate() { requestAnimationFrame(animate); update(); renderer.render(scene, camera); }
+        function onWindowResize() { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
+        function updatePlayerStats() {
+            document.getElementById('healthDisplay').textContent = Math.max(0, playerHealth);
+            const currentWeapon = weapons[currentWeaponIndex];
+            document.getElementById('weaponDisplay').textContent = currentWeapon.name;
+            const ammoReserve = currentWeapon.totalAmmo === Infinity ? "Inf" : currentWeapon.totalAmmo;
+            document.getElementById('ammoDisplay').textContent = `${currentWeapon.ammoInMag}/${ammoReserve}`;
+            document.getElementById('scoreDisplay').textContent = playerScore;
+        }
+        function showMessageBox(message, duration = 3000) {
+            const box = document.getElementById('messageBox');
+            if (!box) return; box.textContent = message; box.style.display = 'block';
+            setTimeout(() => { box.style.display = 'none'; }, duration);
+        }
+
+        window.onload = function() { init(); animate(); };
+    </script>
+</body>
+</html>
